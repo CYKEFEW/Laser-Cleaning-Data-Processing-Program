@@ -1579,7 +1579,14 @@ class MainWindow(QMainWindow):
                     key: TABLE_COLUMNS_EN.get(key, key)
                     for key in df.columns
                 }
-                df = df.rename(columns=rename_map)
+            else:
+                # 重命名已知列为中文，其余列保持原 key 名
+                zh_map = {key: label for key, label in TABLE_COLUMNS}
+                rename_map = {
+                    key: zh_map.get(key, key)
+                    for key in df.columns
+                }
+            df = df.rename(columns=rename_map)
 
             if Path(path).suffix.lower() == ".csv":
                 df.to_csv(path, index=False, encoding="utf-8-sig")
