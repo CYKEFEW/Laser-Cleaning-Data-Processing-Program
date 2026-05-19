@@ -270,8 +270,11 @@ class RsmAnalysisWindow(QMainWindow):
         fit_button.clicked.connect(self.fit_and_plot_rsm)
         export_button = QPushButton("导出响应图")
         export_button.clicked.connect(self.export_rsm_figure)
+        batch_export_button = QPushButton("批量导出所有响应图")
+        batch_export_button.clicked.connect(self.batch_export_rsm_figures)
         controls.addWidget(fit_button, 4, 2)
         controls.addWidget(export_button, 4, 3)
+        controls.addWidget(batch_export_button, 5, 2, 1, 2)
         layout.addLayout(controls)
 
         self.rsm_canvas = ResponseSurfaceCanvas()
@@ -428,6 +431,95 @@ class RsmAnalysisWindow(QMainWindow):
             self.statusBar().showMessage(f"已导出响应图: {path}")
         except Exception as exc:
             self.show_error("导出响应图失败", exc)
+
+    def batch_export_rsm_figures(self) -> None:
+        """批量导出所有响应变量 × 所有因子对组合的响应面图。
+
+        遍历 R/% 和 ΔG/% 两个响应，以及 4 个因子中所有 C(4,2)=6 种 X/Y 因子对，
+        其余两个因子固定在当前界面填写的固定值，共生成最多 12 张图。
+        """
+        from itertools import combinations as _combinations
+
+        try:
+            data = self.merged_analysis_data()
+        except Exception as exc:
+            self.show_error("批量导出失败", exc)
+            return
+
+        out_dir = QFileDialog.getExistingDirectory(
+            self,
+            "选择批量导出目录",
+            str(OUTPUT_DIR),
+        )
+        if not out_dir:
+            return
+
+        out_path = Path(out_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+
+        language = self.current_language()
+        fixed_values = {column: spin.value() for column, spin in self.fixed_spins.items()}
+        factor_pairs = list(_combinations(rsm.FACTOR_COLUMNS, 2))
+        response_names = list(rsm.RESPONSE_COLUMNS.keys())  # ["R/%", "ΔG/%"]
+
+        # 预先拟合两个模型，避免重复拟合
+        models: dict[str, rsm.QuadraticModel] = {}
+        for resp in response_names:
+            try:
+                models[resp] = rsm.fit_quadratic_model(data, resp)
+            except Exception as exc:
+                self.show_error(f"拟合 {resp} 模型失败", exc)
+                return
+
+        total = len(response_names) * len(factor_pairs)
+        progress = QProgressDialog("正在批量导出响应图...", "取消", 0, total, self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        count = 0
+        errors: list[str] = []
+
+        for resp in response_names:
+            model = models[resp]
+            resp_slug = model.response_column  # "residual_area_percent" / "gray_diff_percent"
+            for x_factor, y_factor in factor_pairs:
+                if progress.wasCanceled():
+                    break
+                progress.setValue(count)
+                progress.setLabelText(
+                    f"正在绘制 {resp}  {rsm.FACTOR_LABELS[x_factor]} × {rsm.FACTOR_LABELS[y_factor]}"
+                )
+                QApplication.processEvents()
+
+                try:
+                    # 用独立画布绘图，不影响当前显示的图
+                    canvas = ResponseSurfaceCanvas()
+                    canvas.plot_surface(model, x_factor, y_factor, fixed_values, language=language)
+
+                    fname = f"rsm_{resp_slug}_{x_factor}_vs_{y_factor}_{timestamp}.png"
+                    save_path = out_path / fname
+                    canvas.figure.savefig(str(save_path), dpi=180, bbox_inches="tight")
+                    canvas.figure.clf()
+                except Exception as exc:
+                    errors.append(f"{resp} {x_factor}×{y_factor}: {exc}")
+
+                count += 1
+
+            if progress.wasCanceled():
+                break
+
+        progress.setValue(total)
+
+        if errors:
+            self.show_error(
+                "部分图导出失败",
+                Exception("\n".join(errors)),
+            )
+        else:
+            msg = f"已批量导出 {count} 张响应图到:\n{out_path}"
+            QMessageBox.information(self, "批量导出完成", msg)
+        self.statusBar().showMessage(f"批量导出完成: {count} 张图 → {out_path}")
 
     def show_error(self, title: str, exc: Exception) -> None:
         QMessageBox.critical(self, title, str(exc))
