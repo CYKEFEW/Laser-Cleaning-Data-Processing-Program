@@ -1,0 +1,8 @@
+PySide6
+opencv-python
+Pillow
+numpy
+pandas
+matplotlib
+scipy
+openpyxl
