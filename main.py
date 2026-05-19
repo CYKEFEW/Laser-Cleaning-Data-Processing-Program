@@ -798,6 +798,7 @@ class MainWindow(QMainWindow):
         self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.results_table.horizontalHeader().setStretchLastSection(True)
         self.results_table.setSortingEnabled(True)
+        self.results_table.cellDoubleClicked.connect(self.on_result_row_double_clicked)
         tabs.addTab(self.results_table, "结果表")
         return tabs
 
@@ -1373,8 +1374,69 @@ class MainWindow(QMainWindow):
             for col_idx, (key, _) in enumerate(TABLE_COLUMNS):
                 item = QTableWidgetItem(self._format_value(row.get(key), key))
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                # 把 path 存在第0列的 UserRole，供双击时定位记录
+                if col_idx == 0:
+                    item.setData(Qt.UserRole, row.get("path", ""))
                 self.results_table.setItem(row_idx, col_idx, item)
         self.results_table.setSortingEnabled(True)
+
+    def on_result_row_double_clicked(self, row: int, _col: int) -> None:
+        """双击结果表某行，切换预览到该行对应的样品处理结果。"""
+        # 从第0列的 UserRole 取出 path（排序后行号与 self.results 索引不对应，用 path 匹配）
+        item = self.results_table.item(row, 0)
+        if item is None:
+            return
+        path_str = item.data(Qt.UserRole)
+        if not path_str:
+            return
+        path = Path(path_str)
+        if not path.exists():
+            self.statusBar().showMessage(f"图片文件不存在: {path}")
+            return
+
+        # 如果当前已有该路径的处理结果，直接切换显示
+        if self.current_result is not None and self.current_result.sample_path.resolve() == path.resolve():
+            self._select_view_mode("overlay")
+            self.refresh_preview()
+            self.statusBar().showMessage(f"已切换预览: {path.name}")
+            return
+
+        # 尝试从 self.results 缓存中找到对应记录，重新处理以恢复 ProcessResult
+        try:
+            base_rgb = self.ensure_base_image()
+            # 从缓存记录里恢复 ROI（如果有）
+            cached_row = next(
+                (r for r in self.results if r.get("path") == path_str),
+                None,
+            )
+            roi: tuple[int, int, int, int] | None = self.current_roi
+            if cached_row:
+                roi_text = str(cached_row.get("roi", ""))
+                # roi_text 格式: "x=N, y=N, w=N, h=N" 或 "全图"
+                import re as _re
+                m = _re.fullmatch(
+                    r"x=(\d+),\s*y=(\d+),\s*w=(\d+),\s*h=(\d+)",
+                    roi_text.strip(),
+                )
+                if m:
+                    roi = (int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4)))
+                elif roi_text in ("全图", ""):
+                    roi = None
+
+            result = processing.process_sample(path, base_rgb, roi, self.current_settings())
+            self.current_result = result
+            self.current_sample_path = path
+            self.sample_path_edit.setText(str(path))
+            self.sample_path_edit.setToolTip(str(path))
+            self.viewer.set_roi(roi)
+            self._select_view_mode("overlay")
+            self.refresh_preview()
+            self.statusBar().showMessage(
+                f"已切换预览: {path.name}  R={result.metrics['residual_area_percent']:.4f}%  "
+                f"ΔG={result.metrics['gray_diff_percent']:.4f}%"
+            )
+        except Exception as exc:
+            self.show_error("切换预览失败", exc)
 
     def refresh_preview(self) -> None:
         if self.current_result is None:
