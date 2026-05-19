@@ -24,6 +24,7 @@ def array_to_qimage(image: np.ndarray) -> QImage:
 
 class ImageViewer(QWidget):
     roiChanged = Signal(object)
+    colorPicked = Signal(int, int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -34,6 +35,7 @@ class ImageViewer(QWidget):
         self._pan = QPointF(0, 0)
         self._roi: tuple[int, int, int, int] | None = None
         self._roi_mode = False
+        self._color_pick_mode = False
         self._selecting = False
         self._panning = False
         self._last_mouse = QPoint()
@@ -55,7 +57,15 @@ class ImageViewer(QWidget):
 
     def set_roi_mode(self, enabled: bool) -> None:
         self._roi_mode = enabled
-        self.setCursor(Qt.CrossCursor if enabled else Qt.OpenHandCursor)
+        if enabled:
+            self._color_pick_mode = False
+        self._update_cursor()
+
+    def set_color_pick_mode(self, enabled: bool) -> None:
+        self._color_pick_mode = enabled
+        if enabled:
+            self._roi_mode = False
+        self._update_cursor()
 
     def clear_roi(self) -> None:
         self._roi = None
@@ -90,6 +100,10 @@ class ImageViewer(QWidget):
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if not self._image:
+            return
+        if event.button() == Qt.LeftButton and self._color_pick_mode:
+            point = self._clamp_image_point(self._to_image(QPointF(event.position())))
+            self.colorPicked.emit(int(round(point.x())), int(round(point.y())))
             return
         if event.button() == Qt.LeftButton and self._roi_mode:
             self._selecting = True
@@ -133,7 +147,7 @@ class ImageViewer(QWidget):
             return
         if self._panning and event.button() in (Qt.LeftButton, Qt.MiddleButton, Qt.RightButton):
             self._panning = False
-            self.setCursor(Qt.CrossCursor if self._roi_mode else Qt.OpenHandCursor)
+            self._update_cursor()
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
@@ -178,6 +192,14 @@ class ImageViewer(QWidget):
             min(max(point.x(), 0.0), float(self._image.width() - 1)),
             min(max(point.y(), 0.0), float(self._image.height() - 1)),
         )
+
+    def _update_cursor(self) -> None:
+        if self._color_pick_mode:
+            self.setCursor(Qt.PointingHandCursor)
+        elif self._roi_mode:
+            self.setCursor(Qt.CrossCursor)
+        else:
+            self.setCursor(Qt.OpenHandCursor)
 
 
 class ResponseSurfaceCanvas(FigureCanvasQTAgg):
