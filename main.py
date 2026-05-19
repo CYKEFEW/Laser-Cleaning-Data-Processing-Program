@@ -48,6 +48,7 @@ APP_DIR = Path(__file__).resolve().parent
 DATA_DIR = APP_DIR.parent
 OUTPUT_DIR = APP_DIR / "outputs"
 PRESETS_PATH = APP_DIR / "presets.json"
+CALC_DESIGN_TEMPLATE_PATH = APP_DIR / "图片计算-实验参数表.xlsx"
 
 BUILTIN_PRESETS = {
     "图示推荐参数": {
@@ -79,6 +80,8 @@ TABLE_COLUMNS = [
     ("score_threshold", "评分阈值"),
     ("base_color_samples", "基材取色"),
     ("residual_color_samples", "残留取色"),
+    ("calc_param_table", "计算参数表"),
+    ("param_match_status", "参数匹配"),
     ("roi", "ROI"),
     ("status", "状态"),
 ]
@@ -172,6 +175,39 @@ DESIGN_COLUMN_ALIASES = {
 }
 
 
+def normalize_design_table(data: pd.DataFrame, table_name: str = "实验编号-参数表") -> pd.DataFrame:
+    if data.empty:
+        raise ValueError(f"{table_name}为空")
+    compact_map = {_compact_column_name(column): column for column in data.columns}
+    rename: dict[object, str] = {}
+    for canonical, aliases in DESIGN_COLUMN_ALIASES.items():
+        for alias in aliases:
+            match = compact_map.get(_compact_column_name(alias))
+            if match is not None:
+                rename[match] = canonical
+                break
+    required = ["sample_id", *rsm.FACTOR_COLUMNS]
+    missing = [column for column in required if column not in rename.values()]
+    if missing:
+        raise ValueError(f"{table_name}缺少列: {', '.join(missing)}")
+
+    normalized = data.rename(columns=rename).copy()
+    keep = ["sample_id", "design_type", *rsm.FACTOR_COLUMNS]
+    for column in keep:
+        if column not in normalized.columns:
+            normalized[column] = ""
+    normalized = normalized[keep]
+    normalized["sample_id"] = normalized["sample_id"].astype(str).str.strip().str.upper()
+    normalized = normalized[normalized["sample_id"] != ""].copy()
+    for column in rsm.FACTOR_COLUMNS:
+        normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
+    normalized = normalized.dropna(subset=rsm.FACTOR_COLUMNS)
+    normalized = normalized.drop_duplicates(subset=["sample_id"], keep="first")
+    if normalized.empty:
+        raise ValueError(f"{table_name}没有有效参数行")
+    return normalized
+
+
 class RsmAnalysisWindow(QMainWindow):
     def __init__(self, owner: "MainWindow") -> None:
         super().__init__(owner)
@@ -261,36 +297,7 @@ class RsmAnalysisWindow(QMainWindow):
             self.show_error("导入实验编号-参数表失败", exc)
 
     def normalize_design_table(self, data: pd.DataFrame) -> pd.DataFrame:
-        if data.empty:
-            raise ValueError("实验编号-参数表为空")
-        compact_map = {_compact_column_name(column): column for column in data.columns}
-        rename: dict[object, str] = {}
-        for canonical, aliases in DESIGN_COLUMN_ALIASES.items():
-            for alias in aliases:
-                match = compact_map.get(_compact_column_name(alias))
-                if match is not None:
-                    rename[match] = canonical
-                    break
-        required = ["sample_id", *rsm.FACTOR_COLUMNS]
-        missing = [column for column in required if column not in rename.values()]
-        if missing:
-            raise ValueError(f"实验编号-参数表缺少列: {', '.join(missing)}")
-
-        normalized = data.rename(columns=rename).copy()
-        keep = ["sample_id", "design_type", *rsm.FACTOR_COLUMNS]
-        for column in keep:
-            if column not in normalized.columns:
-                normalized[column] = ""
-        normalized = normalized[keep]
-        normalized["sample_id"] = normalized["sample_id"].astype(str).str.strip().str.upper()
-        normalized = normalized[normalized["sample_id"] != ""].copy()
-        for column in rsm.FACTOR_COLUMNS:
-            normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
-        normalized = normalized.dropna(subset=rsm.FACTOR_COLUMNS)
-        normalized = normalized.drop_duplicates(subset=["sample_id"], keep="first")
-        if normalized.empty:
-            raise ValueError("实验编号-参数表没有有效参数行")
-        return normalized
+        return normalize_design_table(data, "响应面实验编号-参数表")
 
     def merged_analysis_data(self) -> pd.DataFrame:
         if self.design_df is None:
@@ -378,7 +385,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("激光清洗图片数据处理")
         self.resize(1480, 920)
 
-        self.design = rsm.design_map()
+        self.calc_design_df: pd.DataFrame | None = None
+        self.calc_design_path: Path | None = None
         self.base_rgb: np.ndarray | None = None
         self.base_cache_path: Path | None = None
         self.current_sample_path: Path | None = None
@@ -419,6 +427,8 @@ class MainWindow(QMainWindow):
         choose_sample_action.triggered.connect(self.choose_sample_image)
         choose_folder_action = QAction("选择批量文件夹", self)
         choose_folder_action.triggered.connect(self.choose_folder)
+        import_calc_design_action = QAction("导入图片计算参数表", self)
+        import_calc_design_action.triggered.connect(self.import_calc_design_table)
         export_action = QAction("导出结果表", self)
         export_action.triggered.connect(self.export_results_table)
         exit_action = QAction("退出", self)
@@ -426,6 +436,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(choose_base_action)
         file_menu.addAction(choose_sample_action)
         file_menu.addAction(choose_folder_action)
+        file_menu.addAction(import_calc_design_action)
         file_menu.addSeparator()
         file_menu.addAction(export_action)
         file_menu.addSeparator()
@@ -499,6 +510,16 @@ class MainWindow(QMainWindow):
         file_layout.addWidget(self.folder_path_edit, 2, 1)
         file_layout.addWidget(folder_button, 2, 2)
         content_layout.addWidget(file_group)
+
+        calc_param_group = QGroupBox("图片计算参数表")
+        calc_param_layout = QVBoxLayout(calc_param_group)
+        self.calc_design_label = QLabel("未导入；结果表参数列将为空")
+        self.calc_design_label.setWordWrap(True)
+        import_calc_button = QPushButton("导入图片计算参数表")
+        import_calc_button.clicked.connect(self.import_calc_design_table)
+        calc_param_layout.addWidget(self.calc_design_label)
+        calc_param_layout.addWidget(import_calc_button)
+        content_layout.addWidget(calc_param_group)
 
         process_group = QGroupBox("处理")
         process_layout = QVBoxLayout(process_group)
@@ -900,6 +921,60 @@ class MainWindow(QMainWindow):
             self.folder_path_edit.setText(path)
             self.folder_path_edit.setToolTip(path)
 
+    def import_calc_design_table(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "导入图片计算参数表",
+            str(CALC_DESIGN_TEMPLATE_PATH),
+            "Excel (*.xlsx *.xls)",
+        )
+        if not path:
+            return
+        try:
+            raw = pd.read_excel(path)
+            self.calc_design_df = normalize_design_table(raw, "图片计算参数表")
+            self.calc_design_path = Path(path)
+            self.calc_design_label.setText(f"已导入: {Path(path).name}，{len(self.calc_design_df)} 条参数")
+            self.calc_design_label.setToolTip(path)
+            if self.results:
+                self.refresh_result_design_columns()
+            self.statusBar().showMessage(f"已导入图片计算参数表: {path}")
+        except Exception as exc:
+            self.show_error("导入图片计算参数表失败", exc)
+
+    def refresh_result_design_columns(self) -> None:
+        if self.calc_design_df is None:
+            return
+        design_lookup = self.calc_design_df.set_index("sample_id").to_dict(orient="index")
+        for row in self.results:
+            self.apply_calc_design_to_row(row, design_lookup)
+        self.update_results_table()
+
+    def apply_calc_design_to_row(
+        self,
+        row: dict[str, object],
+        design_lookup: dict[str, dict[str, object]] | None = None,
+    ) -> None:
+        for column in ["design_type", *rsm.FACTOR_COLUMNS]:
+            row[column] = np.nan if column in rsm.FACTOR_COLUMNS else ""
+        row["calc_param_table"] = ""
+        row["param_match_status"] = "未导入计算参数表"
+        if self.calc_design_df is None:
+            return
+        if design_lookup is None:
+            design_lookup = self.calc_design_df.set_index("sample_id").to_dict(orient="index")
+        design = design_lookup.get(str(row.get("sample_id", "")).upper())
+        row["calc_param_table"] = self.calc_design_path.name if self.calc_design_path else ""
+        if not design:
+            row["param_match_status"] = "未匹配"
+            return
+        row.update(design)
+        row["param_match_status"] = "已匹配"
+
+    def warn_if_no_calc_design(self) -> None:
+        if self.calc_design_df is None:
+            self.statusBar().showMessage("未导入图片计算参数表：仍会计算R/%和ΔG/%，但实验参数列为空")
+
     def load_base_image(self, path: Path, display: bool = False) -> np.ndarray:
         path = path.resolve()
         if not path.exists():
@@ -1067,6 +1142,7 @@ class MainWindow(QMainWindow):
 
     def process_current_image(self) -> None:
         try:
+            self.warn_if_no_calc_design()
             if self.current_sample_path is None:
                 text = self.sample_path_edit.text().strip()
                 if not text:
@@ -1092,6 +1168,7 @@ class MainWindow(QMainWindow):
 
     def process_batch_folder(self) -> None:
         try:
+            self.warn_if_no_calc_design()
             folder = Path(self.folder_path_edit.text().strip() or DATA_DIR)
             if not folder.exists():
                 raise FileNotFoundError(folder)
@@ -1128,13 +1205,7 @@ class MainWindow(QMainWindow):
     def _result_row(self, result: processing.ProcessResult) -> dict[str, object]:
         row = dict(result.metrics)
         row["path"] = str(result.sample_path)
-        design = self.design.get(result.sample_id.upper())
-        if design:
-            row.update(design)
-        else:
-            row["design_type"] = ""
-            for column in rsm.FACTOR_COLUMNS:
-                row[column] = np.nan
+        self.apply_calc_design_to_row(row)
         return row
 
     def _upsert_result(self, result: processing.ProcessResult) -> None:
