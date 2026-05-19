@@ -1,5 +1,5 @@
 {
-  "默认": {
+  "确定参数": {
     "algorithm_mode": "score",
     "sensitivity": 73.0,
     "local_background_sigma": 42.0,
