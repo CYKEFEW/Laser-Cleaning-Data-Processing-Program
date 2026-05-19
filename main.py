@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -232,6 +232,10 @@ class RsmAnalysisWindow(QMainWindow):
         layout.addLayout(import_layout)
 
         controls = QGridLayout()
+        self.language_combo = QComboBox()
+        self.language_combo.addItem("中文", "zh")
+        self.language_combo.addItem("English", "en")
+        self.language_combo.currentIndexChanged.connect(self.refresh_rsm_language)
         self.response_combo = QComboBox()
         for label in rsm.RESPONSE_COLUMNS:
             self.response_combo.addItem(label, label)
@@ -241,12 +245,14 @@ class RsmAnalysisWindow(QMainWindow):
             self.x_factor_combo.addItem(rsm.FACTOR_LABELS[column], column)
             self.y_factor_combo.addItem(rsm.FACTOR_LABELS[column], column)
         self.y_factor_combo.setCurrentIndex(1)
-        controls.addWidget(QLabel("响应"), 0, 0)
-        controls.addWidget(self.response_combo, 0, 1)
-        controls.addWidget(QLabel("X因子"), 0, 2)
-        controls.addWidget(self.x_factor_combo, 0, 3)
-        controls.addWidget(QLabel("Y因子"), 0, 4)
-        controls.addWidget(self.y_factor_combo, 0, 5)
+        controls.addWidget(QLabel("语言"), 0, 0)
+        controls.addWidget(self.language_combo, 0, 1)
+        controls.addWidget(QLabel("响应"), 0, 2)
+        controls.addWidget(self.response_combo, 0, 3)
+        controls.addWidget(QLabel("X因子"), 1, 0)
+        controls.addWidget(self.x_factor_combo, 1, 1)
+        controls.addWidget(QLabel("Y因子"), 1, 2)
+        controls.addWidget(self.y_factor_combo, 1, 3)
 
         self.fixed_spins: dict[str, QDoubleSpinBox] = {}
         for idx, column in enumerate(rsm.FACTOR_COLUMNS):
@@ -257,21 +263,22 @@ class RsmAnalysisWindow(QMainWindow):
             spin.setDecimals(4 if column == "h_mm" else 2)
             spin.setSingleStep(0.001 if column == "h_mm" else (25.0 if column == "tau_ns" else 10.0))
             self.fixed_spins[column] = spin
-            controls.addWidget(QLabel(rsm.FACTOR_LABELS[column]), 1 + idx // 2, (idx % 2) * 2)
-            controls.addWidget(spin, 1 + idx // 2, (idx % 2) * 2 + 1)
+            controls.addWidget(QLabel(rsm.FACTOR_LABELS[column]), 2 + idx // 2, (idx % 2) * 2)
+            controls.addWidget(spin, 2 + idx // 2, (idx % 2) * 2 + 1)
 
         fit_button = QPushButton("拟合并绘图")
         fit_button.clicked.connect(self.fit_and_plot_rsm)
         export_button = QPushButton("导出响应图")
         export_button.clicked.connect(self.export_rsm_figure)
-        controls.addWidget(fit_button, 3, 4)
-        controls.addWidget(export_button, 3, 5)
+        controls.addWidget(fit_button, 4, 2)
+        controls.addWidget(export_button, 4, 3)
         layout.addLayout(controls)
 
         self.rsm_canvas = ResponseSurfaceCanvas()
         self.rsm_canvas.show_message("请先导入实验编号-参数表，再拟合响应面")
         self.rsm_info = QTextEdit()
         self.rsm_info.setReadOnly(True)
+        self.rsm_info.setFont(QFont("Microsoft YaHei", 10))
         self.rsm_info.setMinimumHeight(140)
         layout.addWidget(self.rsm_canvas, 1)
         layout.addWidget(self.rsm_info)
@@ -298,6 +305,27 @@ class RsmAnalysisWindow(QMainWindow):
 
     def normalize_design_table(self, data: pd.DataFrame) -> pd.DataFrame:
         return normalize_design_table(data, "响应面实验编号-参数表")
+
+    def current_language(self) -> str:
+        return self.language_combo.currentData() or "zh"
+
+    def refresh_rsm_language(self) -> None:
+        language = self.current_language()
+        self.rsm_info.setFont(QFont("Times New Roman" if language == "en" else "Microsoft YaHei", 10))
+        if self.last_rsm_model is not None:
+            try:
+                data = self.merged_analysis_data()
+                fixed_values = {column: spin.value() for column, spin in self.fixed_spins.items()}
+                self.rsm_canvas.plot_surface(
+                    self.last_rsm_model,
+                    self.x_factor_combo.currentData(),
+                    self.y_factor_combo.currentData(),
+                    fixed_values,
+                    language=language,
+                )
+                self.rsm_info.setPlainText(self._rsm_report(data, self.last_rsm_model))
+            except Exception:
+                pass
 
     def merged_analysis_data(self) -> pd.DataFrame:
         if self.design_df is None:
@@ -326,7 +354,7 @@ class RsmAnalysisWindow(QMainWindow):
             data = self.merged_analysis_data()
             model = rsm.fit_quadratic_model(data, response_name)
             fixed_values = {column: spin.value() for column, spin in self.fixed_spins.items()}
-            self.rsm_canvas.plot_surface(model, x_factor, y_factor, fixed_values)
+            self.rsm_canvas.plot_surface(model, x_factor, y_factor, fixed_values, language=self.current_language())
             self.last_rsm_model = model
             self.rsm_info.setPlainText(self._rsm_report(data, model))
         except Exception as exc:
@@ -334,28 +362,55 @@ class RsmAnalysisWindow(QMainWindow):
 
     def _rsm_report(self, data: pd.DataFrame, model: rsm.QuadraticModel) -> str:
         matched = data.dropna(subset=rsm.FACTOR_COLUMNS)
-        lines = [
-            f"{model.response_name} 二次模型",
-            f"参数表: {self.design_path.name if self.design_path else '未命名'}",
-            f"匹配样本数: {len(matched)}, 模型样本数: {model.n_samples}, 矩阵秩: {model.rank}",
-            f"R²: {model.r2:.5f}, RMSE: {model.rmse:.5f}",
-            "",
-            "最小值预测:",
-        ]
+        language = self.current_language()
+        response_label = {
+            "R/%": "Residual area R/%" if language == "en" else "R/% 残留面积率",
+            "ΔG/%": "Gray difference ΔG/%" if language == "en" else "ΔG/% 灰度差",
+            "gray_diff_percent": "Gray difference ΔG/%" if language == "en" else "ΔG/% 灰度差",
+            "residual_area_percent": "Residual area R/%" if language == "en" else "R/% 残留面积率",
+        }.get(model.response_name, model.response_name)
+        table_name = self.design_path.name if self.design_path else ("Unnamed" if language == "en" else "未命名")
+        if language == "en":
+            lines = [
+                f"{response_label} quadratic model",
+                f"Parameter table: {table_name}",
+                f"Matched samples: {len(matched)}, model samples: {model.n_samples}, matrix rank: {model.rank}",
+                f"R²: {model.r2:.5f}, RMSE: {model.rmse:.5f}",
+                "",
+                "Minimum prediction:",
+            ]
+        else:
+            lines = [
+                f"{response_label} 二次模型",
+                f"参数表: {table_name}",
+                f"匹配样本数: {len(matched)}, 模型样本数: {model.n_samples}, 矩阵秩: {model.rank}",
+                f"R²: {model.r2:.5f}, RMSE: {model.rmse:.5f}",
+                "",
+                "最小值预测:",
+            ]
         params, value = rsm.optimize_model(model)
-        lines.append(f"{model.response_name} 最小: {value:.5f}; {rsm.format_params(params)}")
+        if language == "en":
+            lines.append(f"{response_label} minimum: {value:.5f}; {rsm.format_params(params)}")
+        else:
+            lines.append(f"{response_label} 最小: {value:.5f}; {rsm.format_params(params)}")
         try:
             residual_model = rsm.fit_quadratic_model(data, "R/%")
             gray_model = rsm.fit_quadratic_model(data, "ΔG/%")
             c_params, score, r_value, g_value = rsm.optimize_combined(residual_model, gray_model)
-            lines.append(
-                f"综合目标最小: score={score:.5f}, R={r_value:.5f}%, ΔG={g_value:.5f}%; "
-                f"{rsm.format_params(c_params)}"
-            )
+            if language == "en":
+                lines.append(
+                    f"Combined objective minimum: score={score:.5f}, R={r_value:.5f}%, ΔG={g_value:.5f}%; "
+                    f"{rsm.format_params(c_params)}"
+                )
+            else:
+                lines.append(
+                    f"综合目标最小: score={score:.5f}, R={r_value:.5f}%, ΔG={g_value:.5f}%; "
+                    f"{rsm.format_params(c_params)}"
+                )
         except Exception as exc:
-            lines.append(f"综合目标暂不可用: {exc}")
+            lines.append(f"Combined objective unavailable: {exc}" if language == "en" else f"综合目标暂不可用: {exc}")
         lines.append("")
-        lines.append("系数:")
+        lines.append("Coefficients:" if language == "en" else "系数:")
         for name, coef in zip(model.coefficient_names, model.coefficients, strict=False):
             lines.append(f"{name}: {coef:.8g}")
         return "\n".join(lines)

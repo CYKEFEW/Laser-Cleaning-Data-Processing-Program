@@ -212,7 +212,7 @@ class ResponseSurfaceCanvas(FigureCanvasQTAgg):
         self.figure.clear()
         ax = self.figure.add_subplot(111)
         ax.axis("off")
-        ax.text(0.5, 0.5, message, ha="center", va="center", fontsize=12)
+        ax.text(0.5, 0.5, message, ha="center", va="center", fontsize=12, fontfamily="Microsoft YaHei")
         self.draw_idle()
 
     def plot_surface(
@@ -221,23 +221,45 @@ class ResponseSurfaceCanvas(FigureCanvasQTAgg):
         x_factor: str,
         y_factor: str,
         fixed_values: dict[str, float],
+        language: str = "zh",
     ) -> None:
+        font_family = "Times New Roman" if language == "en" else "Microsoft YaHei"
+        factor_labels = {
+            "zh": rsm.FACTOR_LABELS,
+            "en": {
+                "f_khz": "Frequency f / kHz",
+                "tau_ns": "Pulse width tau / ns",
+                "h_mm": "Hatch spacing h / mm",
+                "v_mms": "Scan speed v / mm/s",
+            },
+        }[language]
+        response_labels = {
+            "R/%": "Residual area R/%" if language == "en" else "R/% 残留面积率",
+            "ΔG/%": "Gray difference ΔG/%" if language == "en" else "ΔG/% 灰度差",
+            "gray_diff_percent": "Gray difference ΔG/%" if language == "en" else "ΔG/% 灰度差",
+            "residual_area_percent": "Residual area R/%" if language == "en" else "R/% 残留面积率",
+        }
+        response_label = response_labels.get(model.response_name, model.response_name)
         x_grid, y_grid, z_grid = rsm.response_surface(model, x_factor, y_factor, fixed_values)
         self.figure.clear()
 
         contour_ax = self.figure.add_subplot(121)
         contour = contour_ax.contourf(x_grid, y_grid, z_grid, levels=24, cmap="viridis")
         contour_ax.contour(x_grid, y_grid, z_grid, levels=10, colors="white", linewidths=0.45, alpha=0.7)
-        contour_ax.set_title(f"{model.response_name} 等高线")
-        contour_ax.set_xlabel(rsm.FACTOR_LABELS[x_factor])
-        contour_ax.set_ylabel(rsm.FACTOR_LABELS[y_factor])
+        contour_ax.set_title(f"{response_label} {'Contour' if language == 'en' else '等高线'}", fontfamily=font_family)
+        contour_ax.set_xlabel(factor_labels[x_factor], fontfamily=font_family)
+        contour_ax.set_ylabel(factor_labels[y_factor], fontfamily=font_family)
+        for tick in contour_ax.get_xticklabels() + contour_ax.get_yticklabels():
+            tick.set_fontfamily(font_family)
         self.figure.colorbar(contour, ax=contour_ax, shrink=0.82)
 
         surface_ax = self.figure.add_subplot(122, projection="3d")
         surface_ax.plot_surface(x_grid, y_grid, z_grid, cmap="viridis", linewidth=0, antialiased=True, alpha=0.92)
-        surface_ax.set_title(f"{model.response_name} 响应面")
-        surface_ax.set_xlabel(rsm.FACTOR_LABELS[x_factor])
-        surface_ax.set_ylabel(rsm.FACTOR_LABELS[y_factor])
-        surface_ax.set_zlabel(model.response_name)
+        surface_ax.set_title(f"{response_label} {'Surface' if language == 'en' else '响应面'}", fontfamily=font_family)
+        surface_ax.set_xlabel(factor_labels[x_factor], fontfamily=font_family)
+        surface_ax.set_ylabel(factor_labels[y_factor], fontfamily=font_family)
+        surface_ax.set_zlabel(response_label, fontfamily=font_family)
+        for tick in surface_ax.get_xticklabels() + surface_ax.get_yticklabels() + surface_ax.get_zticklabels():
+            tick.set_fontfamily(font_family)
         self.figure.tight_layout()
         self.draw_idle()
