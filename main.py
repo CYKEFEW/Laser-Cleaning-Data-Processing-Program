@@ -86,6 +86,30 @@ TABLE_COLUMNS = [
     ("status", "状态"),
 ]
 
+# 英文列头映射（key 与 TABLE_COLUMNS 一致）
+TABLE_COLUMNS_EN: dict[str, str] = {
+    "file_name": "File Name",
+    "sample_id": "Sample ID",
+    "design_type": "Design Type",
+    "f_khz": "f/kHz",
+    "tau_ns": "tau/ns",
+    "h_mm": "h/mm",
+    "v_mms": "v/(mm/s)",
+    "residual_area_percent": "R/%",
+    "gray_diff_percent": "dG/%",
+    "sample_gray_mean": "Sample Gray",
+    "base_gray_mean": "Base Gray",
+    "algorithm_mode": "Algorithm",
+    "sensitivity": "Sensitivity",
+    "score_threshold": "Score Threshold",
+    "base_color_samples": "Base Color Samples",
+    "residual_color_samples": "Residual Color Samples",
+    "calc_param_table": "Param Table",
+    "param_match_status": "Match Status",
+    "roi": "ROI",
+    "status": "Status",
+}
+
 
 class SliderControl(QWidget):
     valueChanged = Signal(float)
@@ -266,15 +290,52 @@ class RsmAnalysisWindow(QMainWindow):
             controls.addWidget(QLabel(rsm.FACTOR_LABELS[column]), 2 + idx // 2, (idx % 2) * 2)
             controls.addWidget(spin, 2 + idx // 2, (idx % 2) * 2 + 1)
 
+        # 快速设置固定因子值的预设点下拉框
+        # 数据格式: (显示名, {column: value, ...})
+        _FIXED_PRESETS: list[tuple[str, dict[str, float]]] = [
+            ("— 快速设置 —", {}),
+            ("中心点 M  (115 kHz / 375 ns / 0.025 mm / 4500 mm·s⁻¹)",
+             {"f_khz": 115.0, "tau_ns": 375.0, "h_mm": 0.025, "v_mms": 4500.0}),
+            ("轴点 A01  f=100 kHz",
+             {"f_khz": 100.0, "tau_ns": 375.0, "h_mm": 0.025, "v_mms": 4500.0}),
+            ("轴点 A02  f=130 kHz",
+             {"f_khz": 130.0, "tau_ns": 375.0, "h_mm": 0.025, "v_mms": 4500.0}),
+            ("轴点 A03  τ=250 ns",
+             {"f_khz": 115.0, "tau_ns": 250.0, "h_mm": 0.025, "v_mms": 4500.0}),
+            ("轴点 A04  τ=500 ns",
+             {"f_khz": 115.0, "tau_ns": 500.0, "h_mm": 0.025, "v_mms": 4500.0}),
+            ("轴点 A05  h=0.020 mm",
+             {"f_khz": 115.0, "tau_ns": 375.0, "h_mm": 0.020, "v_mms": 4500.0}),
+            ("轴点 A06  h=0.030 mm",
+             {"f_khz": 115.0, "tau_ns": 375.0, "h_mm": 0.030, "v_mms": 4500.0}),
+            ("轴点 A07  v=4000 mm·s⁻¹",
+             {"f_khz": 115.0, "tau_ns": 375.0, "h_mm": 0.025, "v_mms": 4000.0}),
+            ("轴点 A08  v=5000 mm·s⁻¹",
+             {"f_khz": 115.0, "tau_ns": 375.0, "h_mm": 0.025, "v_mms": 5000.0}),
+            ("因子范围低水平  (100 / 250 / 0.020 / 4000)",
+             {"f_khz": 100.0, "tau_ns": 250.0, "h_mm": 0.020, "v_mms": 4000.0}),
+            ("因子范围高水平  (130 / 500 / 0.030 / 5000)",
+             {"f_khz": 130.0, "tau_ns": 500.0, "h_mm": 0.030, "v_mms": 5000.0}),
+        ]
+        self.fixed_preset_combo = QComboBox()
+        for label, _ in _FIXED_PRESETS:
+            self.fixed_preset_combo.addItem(label)
+        # 存储预设数据到 combo 的 itemData
+        for idx, (_, values) in enumerate(_FIXED_PRESETS):
+            self.fixed_preset_combo.setItemData(idx, values)
+        self.fixed_preset_combo.currentIndexChanged.connect(self._apply_fixed_preset)
+        controls.addWidget(QLabel("快速设置"), 4, 0)
+        controls.addWidget(self.fixed_preset_combo, 4, 1, 1, 3)
+
         fit_button = QPushButton("拟合并绘图")
         fit_button.clicked.connect(self.fit_and_plot_rsm)
         export_button = QPushButton("导出响应图")
         export_button.clicked.connect(self.export_rsm_figure)
         batch_export_button = QPushButton("批量导出所有响应图")
         batch_export_button.clicked.connect(self.batch_export_rsm_figures)
-        controls.addWidget(fit_button, 4, 2)
-        controls.addWidget(export_button, 4, 3)
-        controls.addWidget(batch_export_button, 5, 2, 1, 2)
+        controls.addWidget(fit_button, 5, 2)
+        controls.addWidget(export_button, 5, 3)
+        controls.addWidget(batch_export_button, 6, 2, 1, 2)
         layout.addLayout(controls)
 
         self.rsm_canvas = ResponseSurfaceCanvas()
@@ -286,6 +347,20 @@ class RsmAnalysisWindow(QMainWindow):
         layout.addWidget(self.rsm_canvas, 1)
         layout.addWidget(self.rsm_info)
         self.setCentralWidget(root)
+
+    def _apply_fixed_preset(self, index: int) -> None:
+        """将快速设置下拉框选中的预设值填入固定因子 spin。"""
+        values: dict[str, float] = self.fixed_preset_combo.itemData(index)
+        if not values:
+            return  # 占位项（"— 快速设置 —"），不做任何操作
+        for column, value in values.items():
+            spin = self.fixed_spins.get(column)
+            if spin is not None:
+                spin.setValue(value)
+        # 应用后把下拉框重置回占位项，方便下次再次选同一项也能触发
+        self.fixed_preset_combo.blockSignals(True)
+        self.fixed_preset_combo.setCurrentIndex(0)
+        self.fixed_preset_combo.blockSignals(False)
 
     def import_design_table(self) -> None:
         start = str(APP_DIR / "实验编号-参数表.xlsx")
@@ -1467,8 +1542,23 @@ class MainWindow(QMainWindow):
         try:
             if not self.results:
                 raise ValueError("当前没有可导出的结果")
+
+            # 语言选择
+            lang_box = QMessageBox(self)
+            lang_box.setWindowTitle("导出结果表")
+            lang_box.setText("请选择导出语言：")
+            btn_zh = lang_box.addButton("中文", QMessageBox.AcceptRole)
+            btn_en = lang_box.addButton("English", QMessageBox.AcceptRole)
+            lang_box.addButton("取消", QMessageBox.RejectRole)
+            lang_box.exec()
+            clicked = lang_box.clickedButton()
+            if clicked is None or clicked.text() == "取消":
+                return
+            use_english = clicked is btn_en
+
             OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-            default = OUTPUT_DIR / f"results_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+            lang_tag = "en" if use_english else "zh"
+            default = OUTPUT_DIR / f"results_{lang_tag}_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
             path, _ = QFileDialog.getSaveFileName(
                 self,
                 "导出结果表",
@@ -1477,10 +1567,20 @@ class MainWindow(QMainWindow):
             )
             if not path:
                 return
+
             df = pd.DataFrame(self.results)
             ordered = [key for key, _ in TABLE_COLUMNS if key in df.columns]
             rest = [column for column in df.columns if column not in ordered]
             df = df[ordered + rest]
+
+            if use_english:
+                # 重命名已知列为英文，其余列保持原 key 名
+                rename_map = {
+                    key: TABLE_COLUMNS_EN.get(key, key)
+                    for key in df.columns
+                }
+                df = df.rename(columns=rename_map)
+
             if Path(path).suffix.lower() == ".csv":
                 df.to_csv(path, index=False, encoding="utf-8-sig")
             else:
