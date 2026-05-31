@@ -732,7 +732,7 @@ class MainWindow(QMainWindow):
         self.base_path_edit = QLineEdit()
         self.base_path_edit.setMinimumWidth(320)
         self.base_path_edit.setPlaceholderText("选择基材图片")
-        default_base = DATA_DIR / "4.Base.jpg"
+        default_base = DATA_DIR / "Base.jpg"
         if default_base.exists():
             self.base_path_edit.setText(str(default_base))
             self.base_path_edit.setToolTip(str(default_base))
