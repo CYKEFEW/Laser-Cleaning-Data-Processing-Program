@@ -108,7 +108,37 @@ TABLE_COLUMNS_EN: dict[str, str] = {
     "param_match_status": "Match Status",
     "roi": "ROI",
     "status": "Status",
+    # 额外指标列（来自 processing.metrics，不在 TABLE_COLUMNS 中）
+    "residual_pixels": "Residual Pixels",
+    "valid_pixels": "Valid Pixels",
+    "rgb_std_factor": "RGB Std Factor",
+    "hue_tolerance": "Hue Tolerance",
+    "sv_std_factor": "SV Std Factor",
+    "lab_delta_e": "Lab Delta-E",
+    "min_component_area": "Min Component Area/px",
+    "morph_kernel": "Morph Kernel/px",
+    "votes_required": "Votes Required",
+    "local_background_sigma": "BG Sigma/px",
+    "residual_color_boost": "Residual Boost",
 }
+
+# 中文列头映射（TABLE_COLUMNS 已有的用其标签，额外列补充中文）
+_TABLE_COLUMNS_ZH_EXTRA: dict[str, str] = {
+    "residual_pixels": "残留像素数",
+    "valid_pixels": "有效像素数",
+    "rgb_std_factor": "RGB标准差系数",
+    "hue_tolerance": "色相容差",
+    "sv_std_factor": "SV标准差系数",
+    "lab_delta_e": "Lab色差阈值",
+    "min_component_area": "最小残留面积/px",
+    "morph_kernel": "形态学核/px",
+    "votes_required": "投票阈值",
+    "local_background_sigma": "局部背景尺度/px",
+    "residual_color_boost": "残留色增强",
+}
+
+# 导出时不需要的内部字段
+_EXPORT_DROP_COLUMNS = {"path"}
 
 
 class SliderControl(QWidget):
@@ -1569,23 +1599,18 @@ class MainWindow(QMainWindow):
                 return
 
             df = pd.DataFrame(self.results)
+            # 丢弃纯内部字段
+            df = df.drop(columns=[c for c in _EXPORT_DROP_COLUMNS if c in df.columns])
             ordered = [key for key, _ in TABLE_COLUMNS if key in df.columns]
             rest = [column for column in df.columns if column not in ordered]
             df = df[ordered + rest]
 
             if use_english:
-                # 重命名已知列为英文，其余列保持原 key 名
-                rename_map = {
-                    key: TABLE_COLUMNS_EN.get(key, key)
-                    for key in df.columns
-                }
+                rename_map = {key: TABLE_COLUMNS_EN.get(key, key) for key in df.columns}
             else:
-                # 重命名已知列为中文，其余列保持原 key 名
                 zh_map = {key: label for key, label in TABLE_COLUMNS}
-                rename_map = {
-                    key: zh_map.get(key, key)
-                    for key in df.columns
-                }
+                zh_map.update(_TABLE_COLUMNS_ZH_EXTRA)
+                rename_map = {key: zh_map.get(key, key) for key in df.columns}
             df = df.rename(columns=rename_map)
 
             if Path(path).suffix.lower() == ".csv":
